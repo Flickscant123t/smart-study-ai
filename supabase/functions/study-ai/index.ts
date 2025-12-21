@@ -17,15 +17,6 @@ const systemPrompts: Record<string, string> = {
   
   Format your response with markdown: use ## for headers, **bold** for key terms, and bullet points for lists.`,
   
-  quiz: `You are an expert quiz creator for educational purposes. Generate practice questions that test understanding of the given topic.
-  
-  Create a quiz with:
-  - 3-5 multiple choice questions with 4 options each (mark the correct answer with ✓)
-  - 2 short answer questions
-  - 1 critical thinking question
-  
-  Format with markdown. Use ## for section headers and number each question clearly. Include an answer key at the end.`,
-  
   summarize: `You are an expert at summarizing and condensing information. Create clear, comprehensive summaries of the provided content.
   
   Your summary should include:
@@ -36,6 +27,11 @@ const systemPrompts: Record<string, string> = {
   
   Format with markdown: use ## for headers, **bold** for key terms, and bullet points for organized lists.`
 };
+
+const quizSystemPrompt = `You are an expert quiz creator. Generate exactly 5 multiple choice questions about the given topic.
+Each question must have exactly 4 options (A, B, C, D) with only one correct answer.
+Make the questions progressively harder.
+Include a mix of factual recall, understanding, and application questions.`;
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -58,9 +54,125 @@ serve(async (req) => {
       throw new Error("AI service is not configured");
     }
 
-    const systemPrompt = systemPrompts[mode] || systemPrompts.explain;
-
     console.log(`Processing ${mode} request for: ${message.substring(0, 50)}...`);
+
+    // For quiz mode, use tool calling to get structured output
+    if (mode === "quiz") {
+      const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${LOVABLE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-flash",
+          messages: [
+            { role: "system", content: quizSystemPrompt },
+            { role: "user", content: `Create a quiz about: ${message}` },
+          ],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "create_quiz",
+                description: "Create a structured quiz with multiple choice questions",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    title: { 
+                      type: "string",
+                      description: "A short title for the quiz"
+                    },
+                    questions: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          question: { type: "string", description: "The question text" },
+                          options: {
+                            type: "object",
+                            properties: {
+                              A: { type: "string" },
+                              B: { type: "string" },
+                              C: { type: "string" },
+                              D: { type: "string" }
+                            },
+                            required: ["A", "B", "C", "D"]
+                          },
+                          correctAnswer: { 
+                            type: "string", 
+                            enum: ["A", "B", "C", "D"],
+                            description: "The letter of the correct answer"
+                          },
+                          explanation: { 
+                            type: "string",
+                            description: "Explanation of why this answer is correct"
+                          }
+                        },
+                        required: ["question", "options", "correctAnswer", "explanation"]
+                      }
+                    }
+                  },
+                  required: ["title", "questions"]
+                }
+              }
+            }
+          ],
+          tool_choice: { type: "function", function: { name: "create_quiz" } }
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("AI gateway error:", response.status, errorText);
+        
+        if (response.status === 429) {
+          return new Response(JSON.stringify({ error: "Rate limit exceeded. Please try again in a moment." }), {
+            status: 429,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        if (response.status === 402) {
+          return new Response(JSON.stringify({ error: "AI service requires payment. Please add credits." }), {
+            status: 402,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        
+        return new Response(JSON.stringify({ error: "AI service error" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const data = await response.json();
+      console.log("Quiz response received");
+      
+      // Extract the quiz data from tool call
+      const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
+      if (toolCall && toolCall.function?.arguments) {
+        try {
+          const quizData = JSON.parse(toolCall.function.arguments);
+          return new Response(JSON.stringify({ type: "quiz", data: quizData }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        } catch (parseError) {
+          console.error("Failed to parse quiz data:", parseError);
+          return new Response(JSON.stringify({ error: "Failed to generate quiz" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+      }
+      
+      return new Response(JSON.stringify({ error: "Failed to generate quiz structure" }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // For explain and summarize modes, use streaming
+    const systemPrompt = systemPrompts[mode] || systemPrompts.explain;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",

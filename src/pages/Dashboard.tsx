@@ -14,9 +14,11 @@ import {
   AlertCircle,
   CheckCircle2,
   Zap,
-  StopCircle
+  StopCircle,
+  Loader2
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { InteractiveQuiz } from "@/components/quiz/InteractiveQuiz";
 
 interface User {
   email: string;
@@ -26,6 +28,16 @@ interface User {
 }
 
 type StudyMode = "explain" | "quiz" | "summarize";
+
+interface QuizData {
+  title: string;
+  questions: Array<{
+    question: string;
+    options: { A: string; B: string; C: string; D: string };
+    correctAnswer: string;
+    explanation: string;
+  }>;
+}
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/study-ai`;
 
@@ -37,6 +49,7 @@ const Dashboard = () => {
   const [mode, setMode] = useState<StudyMode>("explain");
   const [isProcessing, setIsProcessing] = useState(false);
   const [response, setResponse] = useState<string>("");
+  const [quizData, setQuizData] = useState<QuizData | null>(null);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
 
   useEffect(() => {
@@ -65,6 +78,14 @@ const Dashboard = () => {
     }
   }, [abortController]);
 
+  const updateUsage = () => {
+    if (!user) return;
+    const newUsage = user.usageToday + 1;
+    const updatedUser = { ...user, usageToday: newUsage };
+    setUser(updatedUser);
+    localStorage.setItem("studyai_user", JSON.stringify(updatedUser));
+  };
+
   const handleSubmit = async () => {
     if (!input.trim()) {
       toast({
@@ -89,6 +110,7 @@ const Dashboard = () => {
 
     setIsProcessing(true);
     setResponse("");
+    setQuizData(null);
 
     const controller = new AbortController();
     setAbortController(controller);
@@ -131,6 +153,28 @@ const Dashboard = () => {
         return;
       }
 
+      // Check if it's a quiz response (JSON) or streaming response
+      const contentType = resp.headers.get("content-type");
+      
+      if (contentType?.includes("application/json")) {
+        // Quiz mode - parse JSON response
+        const data = await resp.json();
+        if (data.type === "quiz" && data.data) {
+          setQuizData(data.data);
+          updateUsage();
+        } else if (data.error) {
+          toast({
+            title: "Error",
+            description: data.error,
+            variant: "destructive",
+          });
+        }
+        setIsProcessing(false);
+        setAbortController(null);
+        return;
+      }
+
+      // Streaming response for explain/summarize modes
       if (!resp.body) {
         throw new Error("No response body");
       }
@@ -196,11 +240,7 @@ const Dashboard = () => {
         }
       }
 
-      // Update usage
-      const newUsage = user.usageToday + 1;
-      const updatedUser = { ...user, usageToday: newUsage };
-      setUser(updatedUser);
-      localStorage.setItem("studyai_user", JSON.stringify(updatedUser));
+      updateUsage();
 
     } catch (error) {
       if ((error as Error).name === "AbortError") {
@@ -220,6 +260,15 @@ const Dashboard = () => {
       setIsProcessing(false);
       setAbortController(null);
     }
+  };
+
+  const handleQuizRetry = () => {
+    // Keep the same quiz data, the component handles resetting state
+  };
+
+  const handleNewQuiz = () => {
+    setQuizData(null);
+    setInput("");
   };
 
   if (!user) return null;
@@ -332,144 +381,169 @@ const Dashboard = () => {
           </motion.div>
         )}
 
-        {/* Study Mode Selection */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="mb-6"
-        >
-          <h2 className="text-lg font-semibold mb-4">What would you like to do?</h2>
-          <div className="grid grid-cols-3 gap-4">
-            {[
-              { id: "explain" as StudyMode, icon: Brain, label: "Explain Topic" },
-              { id: "quiz" as StudyMode, icon: BookOpen, label: "Generate Quiz" },
-              { id: "summarize" as StudyMode, icon: FileText, label: "Summarize" },
-            ].map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setMode(item.id)}
-                disabled={isProcessing}
-                className={`p-4 rounded-xl border-2 transition-all duration-200 disabled:opacity-50 ${
-                  mode === item.id
-                    ? "border-primary bg-primary/5"
-                    : "border-border hover:border-primary/30"
-                }`}
-              >
-                <item.icon className={`w-6 h-6 mx-auto mb-2 ${
-                  mode === item.id ? "text-primary" : "text-muted-foreground"
-                }`} />
-                <span className={`text-sm font-medium ${
-                  mode === item.id ? "text-primary" : ""
-                }`}>
-                  {item.label}
-                </span>
-              </button>
-            ))}
-          </div>
-        </motion.div>
-
-        {/* Input Area */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.25 }}
-          className="mb-8"
-        >
-          <div className="relative">
-            <Textarea
-              placeholder={
-                mode === "explain"
-                  ? "Enter a topic you'd like explained..."
-                  : mode === "quiz"
-                  ? "Enter a topic to generate practice questions..."
-                  : "Paste your notes to summarize..."
-              }
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              className="min-h-[150px] pr-20 resize-none"
-              disabled={isProcessing}
-            />
-            {isProcessing ? (
-              <Button
-                variant="destructive"
-                size="icon"
-                className="absolute bottom-4 right-4"
-                onClick={handleStop}
-              >
-                <StopCircle className="w-5 h-5" />
-              </Button>
-            ) : (
-              <Button
-                variant="hero"
-                size="icon"
-                className="absolute bottom-4 right-4"
-                onClick={handleSubmit}
-                disabled={!user.isPremium && user.usageToday >= user.maxUsage}
-              >
-                <Send className="w-5 h-5" />
-              </Button>
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            {remainingQueries} queries remaining today
-            {!user.isPremium && " • Upgrade for unlimited"}
-          </p>
-        </motion.div>
-
-        {/* Response Area */}
-        {(response || isProcessing) && (
+        {/* Quiz Display */}
+        {quizData && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             className="p-6 rounded-xl bg-card border border-border"
           >
-            <div className="flex items-center gap-2 mb-4 pb-4 border-b border-border">
-              <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                <Sparkles className="w-4 h-4 text-primary" />
-              </div>
-              <span className="font-semibold">AI Response</span>
-              {isProcessing ? (
-                <motion.div
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                  className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full ml-auto"
-                />
-              ) : (
-                <CheckCircle2 className="w-4 h-4 text-green-500 ml-auto" />
-              )}
-            </div>
-            <div className="prose prose-sm max-w-none text-foreground">
-              {response ? (
-                response.split("\n").map((line, i) => {
-                  if (line.startsWith("## ")) {
-                    return <h2 key={i} className="text-xl font-bold mt-4 mb-2 text-foreground">{line.replace("## ", "")}</h2>;
-                  }
-                  if (line.startsWith("### ")) {
-                    return <h3 key={i} className="text-lg font-semibold mt-3 mb-2 text-foreground">{line.replace("### ", "")}</h3>;
-                  }
-                  if (line.startsWith("**") && line.endsWith("**")) {
-                    return <p key={i} className="font-semibold mt-3 text-foreground">{line.replace(/\*\*/g, "")}</p>;
-                  }
-                  if (line.startsWith("- ") || line.startsWith("* ")) {
-                    return <li key={i} className="ml-4 text-foreground">{line.replace(/^[-*] /, "")}</li>;
-                  }
-                  if (/^\d+\./.test(line)) {
-                    return <li key={i} className="ml-4 list-decimal text-foreground">{line.replace(/^\d+\.\s*/, "")}</li>;
-                  }
-                  if (line.startsWith("*") && line.endsWith("*") && !line.startsWith("**")) {
-                    return <p key={i} className="italic text-muted-foreground mt-2">{line.replace(/\*/g, "")}</p>;
-                  }
-                  return line ? <p key={i} className="text-foreground">{line}</p> : <br key={i} />;
-                })
-              ) : (
-                <p className="text-muted-foreground">Generating response...</p>
-              )}
-              {isProcessing && (
-                <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
-              )}
-            </div>
+            <InteractiveQuiz
+              quizData={quizData}
+              onRetry={handleQuizRetry}
+              onNewQuiz={handleNewQuiz}
+            />
           </motion.div>
+        )}
+
+        {/* Study Mode Selection - Hide when quiz is active */}
+        {!quizData && (
+          <>
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+              className="mb-6"
+            >
+              <h2 className="text-lg font-semibold mb-4">What would you like to do?</h2>
+              <div className="grid grid-cols-3 gap-4">
+                {[
+                  { id: "explain" as StudyMode, icon: Brain, label: "Explain Topic" },
+                  { id: "quiz" as StudyMode, icon: BookOpen, label: "Generate Quiz" },
+                  { id: "summarize" as StudyMode, icon: FileText, label: "Summarize" },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setMode(item.id)}
+                    disabled={isProcessing}
+                    className={`p-4 rounded-xl border-2 transition-all duration-200 disabled:opacity-50 ${
+                      mode === item.id
+                        ? "border-primary bg-primary/5"
+                        : "border-border hover:border-primary/30"
+                    }`}
+                  >
+                    <item.icon className={`w-6 h-6 mx-auto mb-2 ${
+                      mode === item.id ? "text-primary" : "text-muted-foreground"
+                    }`} />
+                    <span className={`text-sm font-medium ${
+                      mode === item.id ? "text-primary" : ""
+                    }`}>
+                      {item.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+
+            {/* Input Area */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.25 }}
+              className="mb-8"
+            >
+              <div className="relative">
+                <Textarea
+                  placeholder={
+                    mode === "explain"
+                      ? "Enter a topic you'd like explained..."
+                      : mode === "quiz"
+                      ? "Enter a topic to generate practice questions..."
+                      : "Paste your notes to summarize..."
+                  }
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  className="min-h-[150px] pr-20 resize-none"
+                  disabled={isProcessing}
+                />
+                {isProcessing ? (
+                  mode === "quiz" ? (
+                    <div className="absolute bottom-4 right-4 w-10 h-10 rounded-full bg-primary flex items-center justify-center">
+                      <Loader2 className="w-5 h-5 text-primary-foreground animate-spin" />
+                    </div>
+                  ) : (
+                    <Button
+                      variant="destructive"
+                      size="icon"
+                      className="absolute bottom-4 right-4"
+                      onClick={handleStop}
+                    >
+                      <StopCircle className="w-5 h-5" />
+                    </Button>
+                  )
+                ) : (
+                  <Button
+                    variant="hero"
+                    size="icon"
+                    className="absolute bottom-4 right-4"
+                    onClick={handleSubmit}
+                    disabled={!user.isPremium && user.usageToday >= user.maxUsage}
+                  >
+                    <Send className="w-5 h-5" />
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">
+                {remainingQueries} queries remaining today
+                {!user.isPremium && " • Upgrade for unlimited"}
+              </p>
+            </motion.div>
+
+            {/* Response Area for explain/summarize */}
+            {(response || (isProcessing && mode !== "quiz")) && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-6 rounded-xl bg-card border border-border"
+              >
+                <div className="flex items-center gap-2 mb-4 pb-4 border-b border-border">
+                  <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                    <Sparkles className="w-4 h-4 text-primary" />
+                  </div>
+                  <span className="font-semibold">AI Response</span>
+                  {isProcessing ? (
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                      className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full ml-auto"
+                    />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4 text-green-500 ml-auto" />
+                  )}
+                </div>
+                <div className="prose prose-sm max-w-none text-foreground">
+                  {response ? (
+                    response.split("\n").map((line, i) => {
+                      if (line.startsWith("## ")) {
+                        return <h2 key={i} className="text-xl font-bold mt-4 mb-2 text-foreground">{line.replace("## ", "")}</h2>;
+                      }
+                      if (line.startsWith("### ")) {
+                        return <h3 key={i} className="text-lg font-semibold mt-3 mb-2 text-foreground">{line.replace("### ", "")}</h3>;
+                      }
+                      if (line.startsWith("**") && line.endsWith("**")) {
+                        return <p key={i} className="font-semibold mt-3 text-foreground">{line.replace(/\*\*/g, "")}</p>;
+                      }
+                      if (line.startsWith("- ") || line.startsWith("* ")) {
+                        return <li key={i} className="ml-4 text-foreground">{line.replace(/^[-*] /, "")}</li>;
+                      }
+                      if (/^\d+\./.test(line)) {
+                        return <li key={i} className="ml-4 list-decimal text-foreground">{line.replace(/^\d+\.\s*/, "")}</li>;
+                      }
+                      if (line.startsWith("*") && line.endsWith("*") && !line.startsWith("**")) {
+                        return <p key={i} className="italic text-muted-foreground mt-2">{line.replace(/\*/g, "")}</p>;
+                      }
+                      return line ? <p key={i} className="text-foreground">{line}</p> : <br key={i} />;
+                    })
+                  ) : (
+                    <p className="text-muted-foreground">Generating response...</p>
+                  )}
+                  {isProcessing && (
+                    <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </>
         )}
       </main>
     </div>
