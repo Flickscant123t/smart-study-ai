@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,8 @@ import {
   LogOut,
   AlertCircle,
   CheckCircle2,
-  Zap
+  Zap,
+  StopCircle
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -26,6 +27,8 @@ interface User {
 
 type StudyMode = "explain" | "quiz" | "summarize";
 
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/study-ai`;
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -34,6 +37,7 @@ const Dashboard = () => {
   const [mode, setMode] = useState<StudyMode>("explain");
   const [isProcessing, setIsProcessing] = useState(false);
   const [response, setResponse] = useState<string>("");
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
 
   useEffect(() => {
     const storedUser = localStorage.getItem("studyai_user");
@@ -52,6 +56,14 @@ const Dashboard = () => {
     });
     navigate("/");
   };
+
+  const handleStop = useCallback(() => {
+    if (abortController) {
+      abortController.abort();
+      setAbortController(null);
+      setIsProcessing(false);
+    }
+  }, [abortController]);
 
   const handleSubmit = async () => {
     if (!input.trim()) {
@@ -78,25 +90,136 @@ const Dashboard = () => {
     setIsProcessing(true);
     setResponse("");
 
-    // Simulate AI processing
-    // TODO: Replace with actual AI API integration
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const controller = new AbortController();
+    setAbortController(controller);
 
-    const mockResponses: Record<StudyMode, string> = {
-      explain: `## Understanding: ${input.slice(0, 50)}...\n\nHere's a clear explanation of this topic:\n\n**Key Concepts:**\n- This is a placeholder for AI-generated explanations\n- Connect your preferred AI API (OpenAI, Anthropic, etc.) to enable real responses\n- The explanation would break down complex topics into simple terms\n\n**Why it matters:**\nUnderstanding this concept helps you build a strong foundation for advanced topics.\n\n**Example:**\nImagine you're trying to explain this to a friend...`,
-      quiz: `## Practice Questions on: ${input.slice(0, 50)}...\n\n**Question 1:** What is the main concept behind this topic?\n- A) Option one\n- B) Option two\n- C) Option three\n- D) Option four\n\n**Question 2:** How would you apply this in a real-world scenario?\n\n**Question 3:** What are the three key components of this concept?\n\n*Connect an AI API to generate real practice questions!*`,
-      summarize: `## Summary of Your Notes\n\n**Main Points:**\n1. First key takeaway from your text\n2. Second important concept\n3. Third critical point\n\n**Key Terms:**\n- Term 1: Definition placeholder\n- Term 2: Definition placeholder\n\n**Bottom Line:**\nThis is a placeholder summary. Connect your AI API to get real summaries of your study materials!`,
-    };
+    try {
+      const resp = await fetch(CHAT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ message: input, mode }),
+        signal: controller.signal,
+      });
 
-    setResponse(mockResponses[mode]);
-    
-    // Update usage
-    const newUsage = user.usageToday + 1;
-    const updatedUser = { ...user, usageToday: newUsage };
-    setUser(updatedUser);
-    localStorage.setItem("studyai_user", JSON.stringify(updatedUser));
+      if (!resp.ok) {
+        const errorData = await resp.json().catch(() => ({}));
+        
+        if (resp.status === 429) {
+          toast({
+            title: "Rate Limited",
+            description: "Too many requests. Please wait a moment and try again.",
+            variant: "destructive",
+          });
+        } else if (resp.status === 402) {
+          toast({
+            title: "Credits Required",
+            description: "Please add credits to continue using AI features.",
+            variant: "destructive",
+          });
+        } else {
+          toast({
+            title: "Error",
+            description: errorData.error || "Failed to get AI response",
+            variant: "destructive",
+          });
+        }
+        setIsProcessing(false);
+        setAbortController(null);
+        return;
+      }
 
-    setIsProcessing(false);
+      if (!resp.body) {
+        throw new Error("No response body");
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let textBuffer = "";
+      let fullResponse = "";
+      let streamDone = false;
+
+      while (!streamDone) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        textBuffer += decoder.decode(value, { stream: true });
+
+        let newlineIndex: number;
+        while ((newlineIndex = textBuffer.indexOf("\n")) !== -1) {
+          let line = textBuffer.slice(0, newlineIndex);
+          textBuffer = textBuffer.slice(newlineIndex + 1);
+
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (line.startsWith(":") || line.trim() === "") continue;
+          if (!line.startsWith("data: ")) continue;
+
+          const jsonStr = line.slice(6).trim();
+          if (jsonStr === "[DONE]") {
+            streamDone = true;
+            break;
+          }
+
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (content) {
+              fullResponse += content;
+              setResponse(fullResponse);
+            }
+          } catch {
+            textBuffer = line + "\n" + textBuffer;
+            break;
+          }
+        }
+      }
+
+      // Final flush
+      if (textBuffer.trim()) {
+        for (let raw of textBuffer.split("\n")) {
+          if (!raw) continue;
+          if (raw.endsWith("\r")) raw = raw.slice(0, -1);
+          if (raw.startsWith(":") || raw.trim() === "") continue;
+          if (!raw.startsWith("data: ")) continue;
+          const jsonStr = raw.slice(6).trim();
+          if (jsonStr === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (content) {
+              fullResponse += content;
+              setResponse(fullResponse);
+            }
+          } catch { /* ignore partial leftovers */ }
+        }
+      }
+
+      // Update usage
+      const newUsage = user.usageToday + 1;
+      const updatedUser = { ...user, usageToday: newUsage };
+      setUser(updatedUser);
+      localStorage.setItem("studyai_user", JSON.stringify(updatedUser));
+
+    } catch (error) {
+      if ((error as Error).name === "AbortError") {
+        toast({
+          title: "Stopped",
+          description: "AI response was stopped.",
+        });
+      } else {
+        console.error("Stream error:", error);
+        toast({
+          title: "Error",
+          description: "Failed to get AI response. Please try again.",
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setIsProcessing(false);
+      setAbortController(null);
+    }
   };
 
   if (!user) return null;
@@ -226,7 +349,8 @@ const Dashboard = () => {
               <button
                 key={item.id}
                 onClick={() => setMode(item.id)}
-                className={`p-4 rounded-xl border-2 transition-all duration-200 ${
+                disabled={isProcessing}
+                className={`p-4 rounded-xl border-2 transition-all duration-200 disabled:opacity-50 ${
                   mode === item.id
                     ? "border-primary bg-primary/5"
                     : "border-border hover:border-primary/30"
@@ -264,24 +388,28 @@ const Dashboard = () => {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               className="min-h-[150px] pr-20 resize-none"
+              disabled={isProcessing}
             />
-            <Button
-              variant="hero"
-              size="icon"
-              className="absolute bottom-4 right-4"
-              onClick={handleSubmit}
-              disabled={isProcessing || (!user.isPremium && user.usageToday >= user.maxUsage)}
-            >
-              {isProcessing ? (
-                <motion.div
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                  className="w-5 h-5 border-2 border-primary-foreground border-t-transparent rounded-full"
-                />
-              ) : (
+            {isProcessing ? (
+              <Button
+                variant="destructive"
+                size="icon"
+                className="absolute bottom-4 right-4"
+                onClick={handleStop}
+              >
+                <StopCircle className="w-5 h-5" />
+              </Button>
+            ) : (
+              <Button
+                variant="hero"
+                size="icon"
+                className="absolute bottom-4 right-4"
+                onClick={handleSubmit}
+                disabled={!user.isPremium && user.usageToday >= user.maxUsage}
+              >
                 <Send className="w-5 h-5" />
-              )}
-            </Button>
+              </Button>
+            )}
           </div>
           <p className="text-xs text-muted-foreground mt-2">
             {remainingQueries} queries remaining today
@@ -290,7 +418,7 @@ const Dashboard = () => {
         </motion.div>
 
         {/* Response Area */}
-        {response && (
+        {(response || isProcessing) && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -301,41 +429,48 @@ const Dashboard = () => {
                 <Sparkles className="w-4 h-4 text-primary" />
               </div>
               <span className="font-semibold">AI Response</span>
-              <CheckCircle2 className="w-4 h-4 text-success ml-auto" />
+              {isProcessing ? (
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                  className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full ml-auto"
+                />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 text-green-500 ml-auto" />
+              )}
             </div>
             <div className="prose prose-sm max-w-none text-foreground">
-              {response.split("\n").map((line, i) => {
-                if (line.startsWith("## ")) {
-                  return <h2 key={i} className="text-xl font-bold mt-4 mb-2">{line.replace("## ", "")}</h2>;
-                }
-                if (line.startsWith("**") && line.endsWith("**")) {
-                  return <p key={i} className="font-semibold mt-3">{line.replace(/\*\*/g, "")}</p>;
-                }
-                if (line.startsWith("- ")) {
-                  return <li key={i} className="ml-4">{line.replace("- ", "")}</li>;
-                }
-                if (line.startsWith("*") && line.endsWith("*")) {
-                  return <p key={i} className="italic text-muted-foreground mt-4">{line.replace(/\*/g, "")}</p>;
-                }
-                return line ? <p key={i}>{line}</p> : <br key={i} />;
-              })}
+              {response ? (
+                response.split("\n").map((line, i) => {
+                  if (line.startsWith("## ")) {
+                    return <h2 key={i} className="text-xl font-bold mt-4 mb-2 text-foreground">{line.replace("## ", "")}</h2>;
+                  }
+                  if (line.startsWith("### ")) {
+                    return <h3 key={i} className="text-lg font-semibold mt-3 mb-2 text-foreground">{line.replace("### ", "")}</h3>;
+                  }
+                  if (line.startsWith("**") && line.endsWith("**")) {
+                    return <p key={i} className="font-semibold mt-3 text-foreground">{line.replace(/\*\*/g, "")}</p>;
+                  }
+                  if (line.startsWith("- ") || line.startsWith("* ")) {
+                    return <li key={i} className="ml-4 text-foreground">{line.replace(/^[-*] /, "")}</li>;
+                  }
+                  if (/^\d+\./.test(line)) {
+                    return <li key={i} className="ml-4 list-decimal text-foreground">{line.replace(/^\d+\.\s*/, "")}</li>;
+                  }
+                  if (line.startsWith("*") && line.endsWith("*") && !line.startsWith("**")) {
+                    return <p key={i} className="italic text-muted-foreground mt-2">{line.replace(/\*/g, "")}</p>;
+                  }
+                  return line ? <p key={i} className="text-foreground">{line}</p> : <br key={i} />;
+                })
+              ) : (
+                <p className="text-muted-foreground">Generating response...</p>
+              )}
+              {isProcessing && (
+                <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
+              )}
             </div>
           </motion.div>
         )}
-
-        {/* API Integration Note */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.5 }}
-          className="mt-8 p-4 rounded-xl bg-secondary/50 border border-border"
-        >
-          <p className="text-sm text-muted-foreground text-center">
-            <strong>Developer Note:</strong> Connect your AI API (OpenAI, Anthropic, etc.) 
-            and payment system (Stripe) to enable full functionality. 
-            API keys should be stored securely on the backend only.
-          </p>
-        </motion.div>
       </main>
     </div>
   );
