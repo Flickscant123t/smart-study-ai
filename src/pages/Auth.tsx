@@ -4,14 +4,17 @@ import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Sparkles, Mail, Lock, ArrowRight, Eye, EyeOff } from "lucide-react";
+import { Mail, Lock, ArrowRight, Eye, EyeOff } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
+import logo from "@/assets/thinkcap-logo.png";
 
 const Auth = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { toast } = useToast();
   
+  // Default to login, only show signup if explicitly set
   const [mode, setMode] = useState<"login" | "signup">(
     searchParams.get("mode") === "signup" ? "signup" : "login"
   );
@@ -23,16 +26,36 @@ const Auth = () => {
 
   useEffect(() => {
     const modeParam = searchParams.get("mode");
-    if (modeParam === "signup" || modeParam === "login") {
-      setMode(modeParam);
+    if (modeParam === "signup") {
+      setMode("signup");
+    } else {
+      setMode("login");
     }
   }, [searchParams]);
+
+  // Check if user is already logged in
+  useEffect(() => {
+    const checkSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        navigate("/dashboard");
+      }
+    };
+    checkSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session) {
+        navigate("/dashboard");
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
-    // Basic validation
     if (!email || !password) {
       toast({
         title: "Error",
@@ -53,27 +76,70 @@ const Auth = () => {
       return;
     }
 
-    // Simulate authentication
-    // TODO: Replace with actual authentication logic (Supabase/Firebase)
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    try {
+      if (mode === "signup") {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: `${window.location.origin}/dashboard`
+          }
+        });
+        
+        if (error) {
+          if (error.message.includes("already registered")) {
+            toast({
+              title: "Account exists",
+              description: "This email is already registered. Please sign in instead.",
+              variant: "destructive",
+            });
+          } else {
+            toast({
+              title: "Error",
+              description: error.message,
+              variant: "destructive",
+            });
+          }
+          setIsLoading(false);
+          return;
+        }
 
-    toast({
-      title: mode === "login" ? "Welcome back!" : "Account created!",
-      description: mode === "login" 
-        ? "You have been logged in successfully." 
-        : "Your account has been created. Welcome to Study.ai!",
-    });
+        toast({
+          title: "Account created!",
+          description: "Welcome to ThinkCap! You can now sign in.",
+        });
+        setMode("login");
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
 
-    // Store mock user in localStorage for demo
-    localStorage.setItem("studyai_user", JSON.stringify({ 
-      email, 
-      isPremium: searchParams.get("plan") === "premium",
-      usageToday: 0,
-      maxUsage: searchParams.get("plan") === "premium" ? Infinity : 10,
-    }));
+        if (error) {
+          toast({
+            title: "Error",
+            description: error.message,
+            variant: "destructive",
+          });
+          setIsLoading(false);
+          return;
+        }
+
+        toast({
+          title: "Welcome back!",
+          description: "You have been logged in successfully.",
+        });
+        navigate("/dashboard");
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "An unexpected error occurred. Please try again.",
+        variant: "destructive",
+      });
+    }
 
     setIsLoading(false);
-    navigate("/dashboard");
   };
 
   return (
@@ -86,12 +152,10 @@ const Auth = () => {
           className="w-full max-w-md"
         >
           {/* Logo */}
-          <Link to="/" className="flex items-center gap-2 mb-8">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center">
-              <Sparkles className="w-5 h-5 text-primary-foreground" />
-            </div>
+          <Link to="/" className="flex items-center gap-3 mb-8">
+            <img src={logo} alt="ThinkCap" className="w-10 h-10 object-contain" />
             <span className="text-2xl font-bold">
-              Study<span className="gradient-text">.ai</span>
+              Think<span className="text-primary">Cap</span>
             </span>
           </Link>
 
@@ -225,9 +289,9 @@ const Auth = () => {
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.2 }}
-            className="w-32 h-32 rounded-3xl bg-gradient-to-br from-primary to-accent flex items-center justify-center mx-auto mb-8 shadow-2xl"
+            className="w-32 h-32 rounded-3xl bg-gradient-to-br from-primary to-primary-dark flex items-center justify-center mx-auto mb-8 shadow-2xl"
           >
-            <Sparkles className="w-16 h-16 text-primary-foreground" />
+            <img src={logo} alt="ThinkCap" className="w-20 h-20 object-contain" />
           </motion.div>
           <motion.h2
             initial={{ opacity: 0, y: 10 }}
@@ -243,7 +307,7 @@ const Auth = () => {
             transition={{ delay: 0.4 }}
             className="text-muted-foreground"
           >
-            Join thousands of students who are already using AI to ace their exams 
+            Join thousands of students who are already using ThinkCap to ace their exams 
             and reach their academic goals.
           </motion.p>
         </div>
