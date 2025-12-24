@@ -21,12 +21,13 @@ import SocialProof from "@/components/dashboard/SocialProof";
 import RecentActivity from "@/components/dashboard/RecentActivity";
 import StudyModeCard from "@/components/dashboard/StudyModeCard";
 import NeuralNetworkLoader from "@/components/loading/NeuralNetworkLoader";
+import { supabase } from "@/integrations/supabase/client";
+import type { User, Session } from "@supabase/supabase-js";
 
-interface User {
+interface UserProfile {
   email: string;
   isPremium: boolean;
-  usageToday: number;
-  maxUsage: number;
+  creditsRemaining: number;
 }
 
 type StudyMode = "explain" | "quiz" | "summarize";
@@ -41,12 +42,12 @@ interface QuizData {
   }>;
 }
 
-const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/study-ai`;
-
 const Dashboard = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<StudyMode>("explain");
   const [isProcessing, setIsProcessing] = useState(false);
@@ -54,14 +55,82 @@ const Dashboard = () => {
   const [quizData, setQuizData] = useState<QuizData | null>(null);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
 
+  // Set up auth listener and check session
   useEffect(() => {
-    const storedUser = localStorage.getItem("studyai_user");
-    if (!storedUser) {
-      navigate("/auth");
-      return;
-    }
-    setUser(JSON.parse(storedUser));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setSession(session);
+      if (!session) {
+        navigate("/auth");
+      } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        // Fetch profile after auth state change
+        setTimeout(() => {
+          fetchUserProfile(session.user.id);
+        }, 0);
+      }
+    });
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (!session) {
+        navigate("/auth");
+      } else {
+        fetchUserProfile(session.user.id);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, [navigate]);
+
+  const fetchUserProfile = async (userId: string) => {
+    setIsLoadingProfile(true);
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        console.error('Error fetching profile:', error);
+        // If profile doesn't exist, create one with defaults
+        if (error.code === 'PGRST116') {
+          const { data: userData } = await supabase.auth.getUser();
+          if (userData?.user) {
+            setUserProfile({
+              email: userData.user.email || '',
+              isPremium: false,
+              creditsRemaining: 10,
+            });
+          }
+        }
+      } else if (data) {
+        setUserProfile({
+          email: data.email || '',
+          isPremium: data.is_premium || false,
+          creditsRemaining: data.credits_remaining || 0,
+        });
+      }
+    } catch (err) {
+      console.error('Error in fetchUserProfile:', err);
+    } finally {
+      setIsLoadingProfile(false);
+    }
+  };
+
+  const updateCredits = async () => {
+    if (!userProfile || !session) return;
+    
+    const newCredits = Math.max(0, userProfile.creditsRemaining - 1);
+    
+    const { error } = await supabase
+      .from('profiles')
+      .update({ credits_remaining: newCredits })
+      .eq('id', session.user.id);
+
+    if (!error) {
+      setUserProfile(prev => prev ? { ...prev, creditsRemaining: newCredits } : null);
+    }
+  };
 
   const handleStop = useCallback(() => {
     if (abortController) {
@@ -70,14 +139,6 @@ const Dashboard = () => {
       setIsProcessing(false);
     }
   }, [abortController]);
-
-  const updateUsage = () => {
-    if (!user) return;
-    const newUsage = user.usageToday + 1;
-    const updatedUser = { ...user, usageToday: newUsage };
-    setUser(updatedUser);
-    localStorage.setItem("studyai_user", JSON.stringify(updatedUser));
-  };
 
   const handleSubmit = async () => {
     if (!input.trim()) {
@@ -89,11 +150,11 @@ const Dashboard = () => {
       return;
     }
 
-    if (!user) return;
+    if (!userProfile || !session) return;
 
-    if (!user.isPremium && user.usageToday >= user.maxUsage) {
+    if (!userProfile.isPremium && userProfile.creditsRemaining <= 0) {
       toast({
-        title: "Daily limit reached",
+        title: "No credits remaining",
         description: "Upgrade to Premium for unlimited access!",
         variant: "destructive",
       });
@@ -108,11 +169,13 @@ const Dashboard = () => {
     setAbortController(controller);
 
     try {
-      const resp = await fetch(CHAT_URL, {
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      
+      const resp = await fetch(`https://bcbzfuvswrvlmgnegliv.supabase.co/functions/v1/study-ai`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${currentSession?.access_token || ''}`,
         },
         body: JSON.stringify({ message: input, mode }),
         signal: controller.signal,
@@ -151,7 +214,7 @@ const Dashboard = () => {
         const data = await resp.json();
         if (data.type === "quiz" && data.data) {
           setQuizData(data.data);
-          updateUsage();
+          await updateCredits();
         } else if (data.error) {
           toast({
             title: "Error",
@@ -228,7 +291,7 @@ const Dashboard = () => {
         }
       }
 
-      updateUsage();
+      await updateCredits();
 
     } catch (error) {
       if ((error as Error).name === "AbortError") {
@@ -259,10 +322,15 @@ const Dashboard = () => {
     setInput("");
   };
 
-  if (!user) return null;
+  if (isLoadingProfile || !userProfile) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <NeuralNetworkLoader />
+      </div>
+    );
+  }
 
-  const usagePercentage = user.isPremium ? 0 : (user.usageToday / user.maxUsage) * 100;
-  const remainingQueries = user.isPremium ? "∞" : user.maxUsage - user.usageToday;
+  const usagePercentage = userProfile.isPremium ? 0 : ((10 - userProfile.creditsRemaining) / 10) * 100;
 
   const studyModes = [
     { id: "explain" as StudyMode, icon: Brain, title: "Explain Topic", description: "Get clear explanations of complex concepts" },
@@ -273,7 +341,7 @@ const Dashboard = () => {
   return (
     <div className="min-h-screen bg-background flex">
       {/* Sidebar */}
-      <AppSidebar user={user} />
+      <AppSidebar user={userProfile} />
 
       {/* Main Content */}
       <main className="flex-1 ml-64 p-8">
@@ -285,11 +353,11 @@ const Dashboard = () => {
         >
           <div>
             <h1 className="text-3xl font-bold text-foreground">
-              Welcome back{user.email.split("@")[0] ? `, ${user.email.split("@")[0]}` : ""}! 👋
+              Welcome back{userProfile.email.split("@")[0] ? `, ${userProfile.email.split("@")[0]}` : ""}! 👋
             </h1>
             <p className="text-muted-foreground mt-1">What would you like to learn today?</p>
           </div>
-          {!user.isPremium && (
+          {!userProfile.isPremium && (
             <Button variant="default" className="gap-2" asChild>
               <Link to="/pricing">
                 <Zap className="w-4 h-4" />
@@ -303,7 +371,7 @@ const Dashboard = () => {
         <SocialProof />
 
         {/* Usage Stats for Free Users */}
-        {!user.isPremium && (
+        {!userProfile.isPremium && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -311,21 +379,21 @@ const Dashboard = () => {
             className="mb-8 p-5 rounded-2xl bg-card border border-border shadow-sm"
           >
             <div className="flex items-center justify-between mb-3">
-              <span className="font-medium text-foreground">Daily Usage</span>
+              <span className="font-medium text-foreground">Credits Remaining</span>
               <span className="text-sm text-muted-foreground">
-                {user.usageToday} / {user.maxUsage} queries
+                {userProfile.creditsRemaining} / 10 credits
               </span>
             </div>
             <div className="h-2.5 rounded-full bg-secondary overflow-hidden">
               <motion.div
                 initial={{ width: 0 }}
-                animate={{ width: `${usagePercentage}%` }}
+                animate={{ width: `${100 - usagePercentage}%` }}
                 className={`h-full rounded-full transition-all ${
-                  usagePercentage >= 80 ? "bg-destructive" : "bg-primary"
+                  userProfile.creditsRemaining <= 2 ? "bg-destructive" : "bg-primary"
                 }`}
               />
             </div>
-            {usagePercentage >= 80 && (
+            {userProfile.creditsRemaining <= 2 && (
               <p className="mt-3 text-sm text-destructive flex items-center gap-2">
                 <AlertCircle className="w-4 h-4" />
                 Running low! Upgrade to Pro for unlimited access.
@@ -335,7 +403,7 @@ const Dashboard = () => {
         )}
 
         {/* Upgrade Banner for Free Users */}
-        {!user.isPremium && (
+        {!userProfile.isPremium && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -439,15 +507,15 @@ const Dashboard = () => {
                     size="icon"
                     className="absolute bottom-4 right-4 rounded-xl shadow-lg"
                     onClick={handleSubmit}
-                    disabled={!user.isPremium && user.usageToday >= user.maxUsage}
+                    disabled={!userProfile.isPremium && userProfile.creditsRemaining <= 0}
                   >
                     <Send className="w-5 h-5" />
                   </Button>
                 )}
               </div>
               <p className="text-sm text-muted-foreground mt-3">
-                {remainingQueries} queries remaining today
-                {!user.isPremium && " • Upgrade for unlimited"}
+                {userProfile.isPremium ? "Unlimited queries" : `${userProfile.creditsRemaining} credits remaining`}
+                {!userProfile.isPremium && " • Upgrade for unlimited"}
               </p>
             </motion.div>
 
@@ -494,35 +562,29 @@ const Dashboard = () => {
                         return <h3 key={i} className="text-lg font-semibold mt-3 mb-2 text-foreground">{line.replace("### ", "")}</h3>;
                       }
                       if (line.startsWith("**") && line.endsWith("**")) {
-                        return <p key={i} className="font-semibold mt-3 text-foreground">{line.replace(/\*\*/g, "")}</p>;
+                        return <p key={i} className="font-semibold text-foreground">{line.replace(/\*\*/g, "")}</p>;
                       }
-                      if (line.startsWith("- ") || line.startsWith("* ")) {
-                        return <li key={i} className="ml-4 text-foreground">{line.replace(/^[-*] /, "")}</li>;
+                      if (line.startsWith("- ")) {
+                        return <li key={i} className="text-muted-foreground ml-4">{line.replace("- ", "")}</li>;
                       }
-                      if (/^\d+\./.test(line)) {
-                        return <li key={i} className="ml-4 list-decimal text-foreground">{line.replace(/^\d+\.\s*/, "")}</li>;
+                      if (line.trim()) {
+                        return <p key={i} className="text-muted-foreground mb-2">{line}</p>;
                       }
-                      if (line.startsWith("*") && line.endsWith("*") && !line.startsWith("**")) {
-                        return <p key={i} className="italic text-muted-foreground mt-2">{line.replace(/\*/g, "")}</p>;
-                      }
-                      return line ? <p key={i} className="text-foreground">{line}</p> : <br key={i} />;
+                      return <br key={i} />;
                     })
-                  ) : isProcessing ? (
-                    <NeuralNetworkLoader />
                   ) : (
-                    <p className="text-muted-foreground">Generating response...</p>
-                  )}
-                  {isProcessing && response && (
-                    <span className="inline-block w-2 h-5 bg-primary animate-pulse ml-1 rounded-sm" />
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <span>ThinkCap is thinking...</span>
+                    </div>
                   )}
                 </div>
               </motion.div>
             )}
-
-            {/* Recent Activity - Show when not processing */}
-            {!isProcessing && !response && <RecentActivity />}
           </>
         )}
+
+        {/* Recent Activity */}
+        {!quizData && !response && !isProcessing && <RecentActivity />}
       </main>
     </div>
   );
