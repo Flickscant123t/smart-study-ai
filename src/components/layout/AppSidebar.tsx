@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { 
@@ -21,21 +22,57 @@ interface UserProfile {
   creditsRemaining: number;
 }
 
-interface AppSidebarProps {
-  user: UserProfile;
-}
-
 const navItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/dashboard" },
-  { icon: BookOpen, label: "Study", path: "/dashboard/study" },
-  { icon: FileText, label: "Notes", path: "/dashboard/notes" },
-  { icon: History, label: "History", path: "/dashboard/history" },
+  { icon: BookOpen, label: "Study", path: "/study" },
+  { icon: FileText, label: "Notes", path: "/notes" },
+  { icon: History, label: "History", path: "/history" },
 ];
 
-const AppSidebar = ({ user }: AppSidebarProps) => {
+const AppSidebar = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [user, setUser] = useState<UserProfile>({
+    email: "",
+    isPremium: false,
+    creditsRemaining: 0
+  });
+
+  useEffect(() => {
+    const fetchUserProfile = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("*")
+          .eq("id", session.user.id)
+          .maybeSingle();
+
+        if (profile) {
+          setUser({
+            email: profile.email || session.user.email || "",
+            isPremium: profile.is_premium,
+            creditsRemaining: profile.credits_remaining
+          });
+        } else {
+          setUser({
+            email: session.user.email || "",
+            isPremium: false,
+            creditsRemaining: 0
+          });
+        }
+      }
+    };
+
+    fetchUserProfile();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {
+      fetchUserProfile();
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   const handleLogout = async () => {
     const { error } = await supabase.auth.signOut();
@@ -55,10 +92,7 @@ const AppSidebar = ({ user }: AppSidebarProps) => {
   };
 
   const isActive = (path: string) => {
-    if (path === "/dashboard") {
-      return location.pathname === "/dashboard";
-    }
-    return location.pathname.startsWith(path);
+    return location.pathname === path;
   };
 
   return (
