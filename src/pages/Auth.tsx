@@ -78,7 +78,7 @@ const Auth = () => {
 
     try {
       if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
           options: {
@@ -104,9 +104,20 @@ const Auth = () => {
           return;
         }
 
+        // If session exists, user is auto-logged in (email confirmation disabled)
+        if (data.session) {
+          toast({
+            title: "Welcome to ThinkCap!",
+            description: "Your account has been created successfully.",
+          });
+          navigate("/dashboard");
+          return;
+        }
+
+        // Fallback if email confirmation is enabled
         toast({
           title: "Account created!",
-          description: "Welcome to ThinkCap! You can now sign in.",
+          description: "Please check your email to confirm your account.",
         });
         setMode("login");
       } else {
