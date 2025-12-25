@@ -341,7 +341,7 @@ const Dashboard = () => {
   return (
     <div className="min-h-screen bg-background flex">
       {/* Sidebar */}
-      <AppSidebar user={userProfile} />
+      <AppSidebar />
 
       {/* Main Content */}
       <main className="flex-1 ml-64 p-8">
