@@ -66,6 +66,16 @@ const Auth = () => {
       return;
     }
 
+    if (password.length < 6) {
+      toast({
+        title: "Error",
+        description: "Password must be at least 6 characters",
+        variant: "destructive",
+      });
+      setIsLoading(false);
+      return;
+    }
+
     if (mode === "signup" && password !== confirmPassword) {
       toast({
         title: "Error",
