@@ -14,48 +14,7 @@ export type Database = {
   }
   public: {
     Tables: {
-      profiles: {
-        Row: {
-          created_at: string
-          credits_remaining: number
-          email: string | null
-          id: string
-          is_premium: boolean
-          updated_at: string
-        }
-        Insert: {
-          created_at?: string
-          credits_remaining?: number
-          email?: string | null
-          id: string
-          is_premium?: boolean
-          updated_at?: string
-        }
-        Update: {
-          created_at?: string
-          credits_remaining?: number
-          email?: string | null
-          id?: string
-          is_premium?: boolean
-          updated_at?: string
-        }
-        Relationships: []
-      }
-      studyai: {
-        Row: {
-          created_at: string
-          id: number
-        }
-        Insert: {
-          created_at?: string
-          id?: number
-        }
-        Update: {
-          created_at?: string
-          id?: number
-        }
-        Relationships: []
-      }
+      [_ in never]: never
     }
     Views: {
       [_ in never]: never
