@@ -69,22 +69,64 @@ async function authenticateAndValidate(req: Request) {
   }
 
   // Fetch user profile and validate credits
-  const { data: profile, error: profileError } = await supabase
+  let { data: profile, error: profileError } = await supabase
     .from("profiles")
     .select("is_premium, credits_remaining")
     .eq("id", userId)
     .single();
 
-  if (profileError) {
-    console.error("Profile fetch error:", profileError);
-    // If profile doesn't exist, treat as no credits
-    if (profileError.code === "PGRST116") {
+  // If profile doesn't exist, create one with default credits
+  if (profileError && profileError.code === "PGRST116") {
+    console.log("Profile not found, creating one for user:", userId);
+    
+    // Get user email from claims
+    const userEmail = claimsData.claims.email as string || "";
+    
+    // Use service role to create profile (bypasses RLS)
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (serviceRoleKey) {
+      const adminClient = createClient(supabaseUrl, serviceRoleKey);
+      const { error: insertError } = await adminClient
+        .from("profiles")
+        .insert({ 
+          id: userId, 
+          email: userEmail, 
+          is_premium: false, 
+          credits_remaining: 10 
+        });
+      
+      if (insertError) {
+        console.error("Failed to create profile:", insertError);
+        return { error: "Failed to create user profile", status: 500 };
+      }
+      
+      // Fetch the newly created profile
+      const { data: newProfile, error: fetchError } = await supabase
+        .from("profiles")
+        .select("is_premium, credits_remaining")
+        .eq("id", userId)
+        .single();
+      
+      if (fetchError || !newProfile) {
+        console.error("Failed to fetch new profile:", fetchError);
+        return { error: "Failed to fetch user profile", status: 500 };
+      }
+      
+      profile = newProfile;
+    } else {
+      console.error("Service role key not available for profile creation");
       return { error: "Profile not found - please sign out and sign in again", status: 403 };
     }
+  } else if (profileError) {
+    console.error("Profile fetch error:", profileError);
     return { error: "Failed to fetch user profile", status: 500 };
   }
 
   // Check if user has credits (premium users have unlimited)
+  if (!profile) {
+    return { error: "Failed to fetch user profile", status: 500 };
+  }
+  
   if (!profile.is_premium && (profile.credits_remaining || 0) <= 0) {
     return { error: "Insufficient credits - please upgrade to Premium", status: 402 };
   }
