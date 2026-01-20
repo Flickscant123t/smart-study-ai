@@ -94,7 +94,7 @@ const Study = () => {
     <SidebarProvider>
       <div className="min-h-screen flex w-full bg-background">
         <AppSidebar />
-        <main className="flex-1 p-6 lg:p-8 overflow-auto">
+        <main className="flex-1 ml-64 p-6 lg:p-8 overflow-auto">
           <div className="max-w-4xl mx-auto space-y-8">
             <div>
               <h1 className="text-3xl font-bold text-foreground">Study Mode</h1>
