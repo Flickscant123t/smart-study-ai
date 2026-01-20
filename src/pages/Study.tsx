@@ -68,22 +68,70 @@ const Study = () => {
         return;
       }
 
-      const result = await supabase.functions.invoke("study-ai", {
-        body: { message: mode.prompt + input, mode: mode.id }
+      // Use fetch directly for streaming support
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const response = await fetch(`${supabaseUrl}/functions/v1/study-ai`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ message: mode.prompt + input, mode: mode.id }),
       });
 
-      if (result.error) throw result.error;
-      
-      // Handle different response types
-      if (result.data?.type === "quiz") {
-        setResponse(JSON.stringify(result.data.data, null, 2));
-      } else if (typeof result.data === "string") {
-        setResponse(result.data);
-      } else {
-        setResponse(result.data?.response || "Response received");
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Request failed");
       }
 
-      // Credits are now decremented server-side - no client-side update needed
+      const contentType = response.headers.get("content-type");
+      
+      // Handle quiz (JSON) response
+      if (contentType?.includes("application/json")) {
+        const data = await response.json();
+        if (data.type === "quiz") {
+          setResponse(JSON.stringify(data.data, null, 2));
+        } else {
+          setResponse(data.response || JSON.stringify(data));
+        }
+      } 
+      // Handle streaming response (SSE)
+      else if (contentType?.includes("text/event-stream")) {
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let fullText = "";
+
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split("\n");
+
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                const data = line.slice(6);
+                if (data === "[DONE]") continue;
+                
+                try {
+                  const parsed = JSON.parse(data);
+                  const content = parsed.choices?.[0]?.delta?.content;
+                  if (content) {
+                    fullText += content;
+                    setResponse(fullText);
+                  }
+                } catch {
+                  // Skip non-JSON lines
+                }
+              }
+            }
+          }
+        }
+      } else {
+        const text = await response.text();
+        setResponse(text);
+      }
 
     } catch (error: any) {
       toast({
