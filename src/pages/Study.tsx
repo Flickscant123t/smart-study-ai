@@ -69,11 +69,19 @@ const Study = () => {
       }
 
       const result = await supabase.functions.invoke("study-ai", {
-        body: { prompt: mode.prompt + input }
+        body: { message: mode.prompt + input, mode: mode.id }
       });
 
       if (result.error) throw result.error;
-      setResponse(result.data.response || "No response received");
+      
+      // Handle different response types
+      if (result.data?.type === "quiz") {
+        setResponse(JSON.stringify(result.data.data, null, 2));
+      } else if (typeof result.data === "string") {
+        setResponse(result.data);
+      } else {
+        setResponse(result.data?.response || "Response received");
+      }
 
       // Credits are now decremented server-side - no client-side update needed
 
