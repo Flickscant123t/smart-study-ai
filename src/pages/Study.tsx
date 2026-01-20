@@ -75,11 +75,7 @@ const Study = () => {
       if (result.error) throw result.error;
       setResponse(result.data.response || "No response received");
 
-      // Update credits
-      await supabase
-        .from("profiles")
-        .update({ credits_remaining: result.data.credits_remaining })
-        .eq("id", session.user.id);
+      // Credits are now decremented server-side - no client-side update needed
 
     } catch (error: any) {
       toast({
