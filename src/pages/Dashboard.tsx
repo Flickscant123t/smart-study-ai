@@ -117,18 +117,22 @@ const Dashboard = () => {
     }
   };
 
-  const updateCredits = async () => {
-    if (!userProfile || !session) return;
+  // Refresh credits from server after successful API calls
+  const refreshCredits = async () => {
+    if (!session) return;
     
-    const newCredits = Math.max(0, userProfile.creditsRemaining - 1);
-    
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('profiles')
-      .update({ credits_remaining: newCredits })
-      .eq('id', session.user.id);
+      .select('credits_remaining, is_premium')
+      .eq('id', session.user.id)
+      .single();
 
-    if (!error) {
-      setUserProfile(prev => prev ? { ...prev, creditsRemaining: newCredits } : null);
+    if (!error && data) {
+      setUserProfile(prev => prev ? { 
+        ...prev, 
+        creditsRemaining: data.credits_remaining,
+        isPremium: data.is_premium 
+      } : null);
     }
   };
 
@@ -171,7 +175,9 @@ const Dashboard = () => {
     try {
       const { data: { session: currentSession } } = await supabase.auth.getSession();
       
-      const resp = await fetch(`https://bcbzfuvswrvlmgnegliv.supabase.co/functions/v1/study-ai`, {
+      // Use environment variable for URL instead of hardcoding
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const resp = await fetch(`${supabaseUrl}/functions/v1/study-ai`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -214,7 +220,8 @@ const Dashboard = () => {
         const data = await resp.json();
         if (data.type === "quiz" && data.data) {
           setQuizData(data.data);
-          await updateCredits();
+          // Credits are now decremented server-side, just refresh local state
+          await refreshCredits();
         } else if (data.error) {
           toast({
             title: "Error",
@@ -291,7 +298,8 @@ const Dashboard = () => {
         }
       }
 
-      await updateCredits();
+      // Credits are now decremented server-side, just refresh local state
+      await refreshCredits();
 
     } catch (error) {
       if ((error as Error).name === "AbortError") {

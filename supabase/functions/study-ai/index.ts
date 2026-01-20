@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -33,12 +34,96 @@ Each question must have exactly 4 options (A, B, C, D) with only one correct ans
 Make the questions progressively harder.
 Include a mix of factual recall, understanding, and application questions.`;
 
+// Helper function to authenticate user and validate credits
+async function authenticateAndValidate(req: Request) {
+  const authHeader = req.headers.get("Authorization");
+  
+  if (!authHeader?.startsWith("Bearer ")) {
+    return { error: "Unauthorized - No valid token provided", status: 401 };
+  }
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.error("Missing Supabase environment variables");
+    return { error: "Server configuration error", status: 500 };
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  // Validate the JWT token and get user
+  const token = authHeader.replace("Bearer ", "");
+  const { data: claimsData, error: claimsError } = await supabase.auth.getClaims(token);
+
+  if (claimsError || !claimsData?.claims) {
+    console.error("Auth validation failed:", claimsError);
+    return { error: "Unauthorized - Invalid token", status: 401 };
+  }
+
+  const userId = claimsData.claims.sub;
+  if (!userId) {
+    return { error: "Unauthorized - No user ID in token", status: 401 };
+  }
+
+  // Fetch user profile and validate credits
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("is_premium, credits_remaining")
+    .eq("id", userId)
+    .single();
+
+  if (profileError) {
+    console.error("Profile fetch error:", profileError);
+    // If profile doesn't exist, treat as no credits
+    if (profileError.code === "PGRST116") {
+      return { error: "Profile not found - please sign out and sign in again", status: 403 };
+    }
+    return { error: "Failed to fetch user profile", status: 500 };
+  }
+
+  // Check if user has credits (premium users have unlimited)
+  if (!profile.is_premium && (profile.credits_remaining || 0) <= 0) {
+    return { error: "Insufficient credits - please upgrade to Premium", status: 402 };
+  }
+
+  return { userId, profile, supabase };
+}
+
+// Helper function to decrement credits after successful AI response
+async function decrementCredits(supabase: any, userId: string, isPremium: boolean, currentCredits: number) {
+  if (isPremium) return; // Premium users don't use credits
+
+  const newCredits = Math.max(0, currentCredits - 1);
+  const { error } = await supabase
+    .from("profiles")
+    .update({ credits_remaining: newCredits })
+    .eq("id", userId);
+
+  if (error) {
+    console.error("Failed to decrement credits:", error);
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    // Authenticate user and validate credits
+    const authResult = await authenticateAndValidate(req);
+    if ("error" in authResult) {
+      return new Response(JSON.stringify({ error: authResult.error }), {
+        status: authResult.status,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const { userId, profile, supabase } = authResult;
+
     const { message, mode } = await req.json();
     
     if (!message || !mode) {
@@ -54,7 +139,7 @@ serve(async (req) => {
       throw new Error("AI service is not configured");
     }
 
-    console.log(`Processing ${mode} request for: ${message.substring(0, 50)}...`);
+    console.log(`Processing ${mode} request for user ${userId}: ${message.substring(0, 50)}...`);
 
     // For quiz mode, use tool calling to get structured output
     if (mode === "quiz") {
@@ -153,6 +238,10 @@ serve(async (req) => {
       if (toolCall && toolCall.function?.arguments) {
         try {
           const quizData = JSON.parse(toolCall.function.arguments);
+          
+          // Decrement credits server-side after successful response
+          await decrementCredits(supabase, userId, profile.is_premium, profile.credits_remaining);
+          
           return new Response(JSON.stringify({ type: "quiz", data: quizData }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
@@ -214,6 +303,10 @@ serve(async (req) => {
     }
 
     console.log("Streaming response from AI gateway");
+    
+    // Decrement credits server-side for streaming responses
+    // Note: We decrement at the start of streaming since we can't easily track completion
+    await decrementCredits(supabase, userId, profile.is_premium, profile.credits_remaining);
     
     return new Response(response.body, {
       headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
