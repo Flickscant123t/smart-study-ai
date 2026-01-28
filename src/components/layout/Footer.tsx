@@ -40,7 +40,7 @@ const Footer = () => {
                 <Sparkles className="w-5 h-5 text-primary-foreground" />
               </div>
               <span className="text-xl font-bold">
-                Study<span className="gradient-text">.ai</span>
+                Study<span className="gradient-text">Cap</span>
               </span>
             </Link>
             <p className="text-muted-foreground text-sm mb-6 max-w-xs">
@@ -115,7 +115,7 @@ const Footer = () => {
         {/* Bottom Bar */}
         <div className="mt-12 pt-8 border-t border-border flex flex-col md:flex-row justify-between items-center gap-4">
           <p className="text-sm text-muted-foreground">
-            © {currentYear} Study.ai. All rights reserved.
+            © {currentYear} StudyCap. All rights reserved.
           </p>
           <p className="text-sm text-muted-foreground">
             Made with ❤️ for students everywhere

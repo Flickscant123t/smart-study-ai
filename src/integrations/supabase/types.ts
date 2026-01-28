@@ -18,25 +18,31 @@ export type Database = {
         Row: {
           created_at: string
           credits_remaining: number
+          daily_uses: number | null
           email: string | null
           id: string
           is_premium: boolean
+          last_usage_date: string | null
           updated_at: string
         }
         Insert: {
           created_at?: string
           credits_remaining?: number
+          daily_uses?: number | null
           email?: string | null
           id: string
           is_premium?: boolean
+          last_usage_date?: string | null
           updated_at?: string
         }
         Update: {
           created_at?: string
           credits_remaining?: number
+          daily_uses?: number | null
           email?: string | null
           id?: string
           is_premium?: boolean
+          last_usage_date?: string | null
           updated_at?: string
         }
         Relationships: []
