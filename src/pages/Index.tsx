@@ -34,7 +34,7 @@ const testimonials = [
   {
     name: "Sarah Chen",
     role: "Medical Student",
-    content: "Study.ai has completely transformed how I prepare for exams. The AI explanations help me understand complex anatomy concepts in minutes instead of hours.",
+    content: "StudyCap has completely transformed how I prepare for exams. The AI explanations help me understand complex anatomy concepts in minutes instead of hours.",
     avatar: "SC",
   },
   {
@@ -46,7 +46,7 @@ const testimonials = [
   {
     name: "Emily Rodriguez",
     role: "High School Senior",
-    content: "I went from struggling with AP Chemistry to getting a 5 on the exam. This app is a game-changer for students.",
+    content: "I went from struggling with AP Chemistry to getting a 5 on the exam. StudyCap is a game-changer for students.",
     avatar: "ER",
   },
 ];
@@ -93,10 +93,10 @@ const Index = () => {
               transition={{ duration: 0.6, delay: 0.1 }}
               className="text-4xl md:text-6xl lg:text-7xl font-bold mb-6 leading-tight"
             >
-              Study Smarter.{" "}
-              <span className="gradient-text">Learn Faster.</span>
+              Study Smarter{" "}
+              <span className="gradient-text">With StudyCap.</span>
               <br />
-              Powered by AI.
+              Your AI Study Partner.
             </motion.h1>
 
             <motion.p
@@ -260,7 +260,7 @@ const Index = () => {
               transition={{ delay: 0.1 }}
               className="text-muted-foreground max-w-2xl mx-auto"
             >
-              Join thousands of students who are already studying smarter with Study.ai
+              Join thousands of students who are already studying smarter with StudyCap
             </motion.p>
           </div>
 
@@ -289,7 +289,7 @@ const Index = () => {
               Ready to Transform Your Studying?
             </h2>
             <p className="text-muted-foreground mb-8 max-w-xl mx-auto">
-              Join thousands of students already using Study.ai to learn faster and achieve their academic goals.
+              Join thousands of students already using StudyCap to learn faster and achieve their academic goals.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Button variant="hero" size="lg" asChild>

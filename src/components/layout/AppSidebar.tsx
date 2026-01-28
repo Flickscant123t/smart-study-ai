@@ -105,9 +105,9 @@ const AppSidebar = () => {
       {/* Logo */}
       <div className="p-6 border-b border-sidebar-border">
         <Link to="/" className="flex items-center gap-3">
-          <img src={logo} alt="ThinkCap" className="w-10 h-10 object-contain" />
+          <img src={logo} alt="StudyCap" className="w-10 h-10 object-contain" />
           <span className="text-xl font-bold text-foreground">
-            Think<span className="text-primary">Cap</span>
+            Study<span className="text-primary">Cap</span>
           </span>
         </Link>
       </div>
